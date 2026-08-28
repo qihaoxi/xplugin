@@ -1,348 +1,456 @@
-# C 语言工具链微内核插件框架(xplugin)设计规范
+# xplugin 设计规范 v2 —— 通用 C 微内核插件框架
 
-> 目标:为 C 语言实现的虚拟机 / 编译器 / 链接器提供可插拔组件框架。
-> 思想来源:HashiCorp go-plugin(契约、握手、进程隔离)+ Cordis/DSH(薄微内核、上下文、可逆副作用、服务+事件)。
-> 只移植语言无关的设计思想,不照搬任何实现。
+> 一句话:**用一份核心抽象(上下文 + 可逆副作用 + 服务注册表 + 事件总线 + 拓扑装配),让任何 C 项目获得"事务化装配组件"的能力;进程内直调与进程外隔离两种执行域共用同一契约。**
 >
-> 配套文档:`xvm-integration.md` —— 本框架在 xvm 上的落地分析与分阶段计划。
+> 思想来源:HashiCorp go-plugin(契约、握手、进程隔离、宿主协调者)+ Cordis/DSH(薄内核、上下文、effect、服务+事件双原语、对等组件、拓扑依赖)。
+>
+> v2 相对 v1 蓝图(本文末尾"设计修正记录")的核心变化:**回应过度设计批评**——核心最小化(目标 ≤1500 行)、loader/remote 降为可选模块、按触发条件启用;所有注册 API 事务化(自动登记 undo),组件不再手写回滚。
 
 ---
 
 ## 目录
 
-1. [概述与动机](#1-概述与动机)
-2. [外部参考系统精华萃取](#2-外部参考系统精华萃取)
-3. [C 语言现实硬约束](#3-c-语言现实硬约束)
-4. [双执行域模型](#4-双执行域模型)
-5. [整体分层架构](#5-整体分层架构)
-6. [微内核核心子系统设计](#6-微内核核心子系统设计)
-7. [业务场景落地映射](#7-业务场景落地映射)
-8. [完整启动执行流程](#8-完整启动执行流程)
-9. [C 语言风险清单与规避](#9-c-语言风险清单与规避)
-10. [执行域选型决策表](#10-执行域选型决策表)
-11. [架构演进扩展方向](#11-架构演进扩展方向)
-12. [架构收获总览](#12-架构收获总览)
+1. [目标与非目标](#1-目标与非目标)
+2. [功能特点](#2-功能特点)
+3. [总体架构:三档可裁剪](#3-总体架构三档可裁剪)
+4. [公共契约](#4-公共契约)
+5. [核心 API 规格](#5-核心-api-规格)
+6. [确定性与成本模型](#6-确定性与成本模型)
+7. [loader 模块(可选)](#7-loader-模块可选)
+8. [remote 模块(可选)](#8-remote-模块可选)
+9. [系统事件与可观测](#9-系统事件与可观测)
+10. [C 语言风险清单](#10-c-语言风险清单)
+11. [通用性:消费场景矩阵](#11-通用性消费场景矩阵)
+12. [设计修正记录(v1 → v2)](#12-设计修正记录v1--v2)
 
 ---
 
-## 1 概述与动机
+## 1 目标与非目标
 
-手写 C 实现编译器、链接器、字节码虚拟机的常见痛点:
+### 1.1 解决的痛点(任何 C 项目通用)
 
-1. 模块高度耦合,新增 Pass、指令后端、重定位处理器要修改核心源码。
-2. 扩展模块故障直接摧毁主进程,第三方扩展稳定性不可控。
-3. 模块加载顺序硬编码,无法按需启用、禁用组件。
-4. 全局变量泛滥,无法支持多实例并行编译、多虚拟机实例。
-5. 两个相互矛盾的诉求:**高性能直接调用** 和 **故障安全隔离**。
+1. 模块耦合:新增扩展要改核心源码。
+2. 扩展故障直接摧毁宿主进程(不可信代码无隔离)。
+3. 装配顺序硬编码,无法按需启停组件。
+4. 全局状态泛滥,无法多实例并行。
+5. 卸载残留:注册了的东西没人撤销,资源/回调泄漏。
+6. 两个矛盾诉求:**高性能直接调用** vs **故障安全隔离**。
 
-参考两套标杆,各取所长:
+### 1.2 非目标(边界)
 
-| 来源 | 获得的思想 |
-|------|-----------|
-| HashiCorp go-plugin | 接口契约、版本握手、进程故障隔离、宿主作为协调者 |
-| Cordis / DSH | 薄微内核、上下文、可逆副作用、服务+事件双原语、对等组件、拓扑依赖 |
-
-**关键设计命题:同一套内核抽象,同时支持内存执行域与隔离执行域;上层业务完全不需要感知组件运行在哪一个域。**
-
-### 1.1 边界说明
-
-- ✅ 适用:C 实现的编译器、IR-Pass 流水线、链接器、栈/寄存器虚拟机、工具链扩展。
-- ❌ 不适用:内核态代码;纳秒级极致开销路径;频繁 dlclose 热卸载动态库。
-
-### 1.2 设计原则
-
-1. **无全局状态原则**:全部状态收纳于显式上下文对象,支持多实例。
-2. **接口优于实现原则**:内核只依赖接口契约,不依赖任何具体组件实现。
-3. **故障域分层原则**:可信组件走内存域;不可信组件强制隔离域。
-4. **显式生命周期 + 可逆副作用原则**:所有注册副作用登记 undo,卸载逆序撤销。
-5. **开销透明原则**:两套执行域对外接口完全一致,但性能特征明确,业务做选型。
+- ❌ 内核态代码;纳秒级极致开销路径;频繁 dlclose 热卸载。
+- ❌ 不做业务:内核不含任何领域逻辑,只做生命周期、依赖解析、分发。
+- ❌ 不自带线程/事件循环:核心是纯同步、无 OS 依赖的算法库。
+- ❌ 不定义值系统:事件 payload、服务参数类型全部由宿主定义。
 
 ---
 
-## 2 外部参考系统精华萃取
+## 2 功能特点
 
-### 2.1 go-plugin(HashiCorp)—— 剥离 Go/gRPC 后的核心思想
-
-1. **契约先行**:预先定义抽象接口,宿主只依赖接口,不依赖具体实现,实现可整体替换。
-2. **严格 ABI 边界**:宿主-插件之间有清晰二进制边界。
-3. **版本握手**:加载阶段协商接口 ABI 版本;版本不兼容直接拒绝加载。
-4. **故障域隔离**:可选择组件运行于独立进程,组件崩溃不摧毁宿主。
-5. **宿主只是协调者**:业务能力全部下沉插件,宿主本身不执行业务逻辑。
-
-> 舍弃:gRPC、Go runtime、Go 类型系统;自己实现轻量 IPC 代理层。
-
-### 2.2 Cordis / DSH —— 剥离 Node/TS 后的核心思想
-
-1. **极薄微内核**:内核只负责组件生命周期、依赖解析、上下文;内核不实现任何业务逻辑。
-2. **Context 上下文作为唯一胶水**:组件之间禁止硬编码直接调用;全部通过上下文获取服务。
-3. **可逆副作用 effect**:组件初始化登记所有注册行为;卸载逆序撤销,消除资源泄漏、残留回调。
-4. **两大基础原语:服务注册表 + 事件总线**
-   - Service:命名服务注册查询,用于**带返回值的能力调用**。
-   - Event:钩子/流水线拦截,用于横切逻辑:日志、统计、改写 IR、校验。
-5. **对等组件模型**:编译 Pass、虚拟机 Opcode 处理器、链接器重定位处理器全部是普通组件,不存在神圣不可修改的内核模块。
-6. **依赖拓扑排序启动**:组件声明 requires/provides,内核自动推导安全初始化顺序。
-
-> 舍弃:JS 装饰器、GC、动态类型;全部在 C 手动模拟 effect 栈、vtable 契约。
+| # | 特点 | 说明 |
+|---|------|------|
+| 1 | **事务化装配** | 组件 install 失败自动逆序回滚已装部分;`ctx_destroy` 走同一条回放路径——卸载逻辑只写一遍,不可能是两套行为 |
+| 2 | **可逆副作用内建** | `service_bind` / `bus_on` 等注册 API **自动**登记 undo;组件手写 effect 仅用于自定义资源(文件句柄、子进程) |
+| 3 | **双执行域统一契约** | 进程内直调与进程外代理共用同一 vtable;业务代码零 if-else 区分本地/远程 |
+| 4 | **版本握手内建** | 所有服务 vtable 首字段 `uint32_t version`;bind/resolve 阶段强制校验,major 不符即拒 |
+| 5 | **服务/事件双原语,职责硬分离** | 服务=带返回值的能力调用;事件=无返回值广播;禁止拿事件做 RPC |
+| 6 | **零依赖 C11,可裁剪三档** | core(无线程/无文件 IO,嵌入式可用)→ +loader(dlopen)→ +remote(进程隔离);链接什么用什么 |
+| 7 | **分配器注入** | 宿主可整体替换 alloc/free,跨库堆隔离,destroy 全量回收无泄漏 |
+| 8 | **确定性行为** | 拓扑序稳定(平局按注册序)、事件按订阅序同步派发、undo 严格逆序——同样输入永远同样装配结果 |
+| 9 | **开销透明** | 每个 API 的复杂度/分配次数有公开成本表;事件零订阅快路径一次哈希探测(intern id 路径 ≤1 分支) |
+| 10 | **故障隔离(remote 档)** | 子进程崩溃不影响宿主;服务失效发系统事件,可配置重启策略 |
+| 11 | **宿主始终是协调者** | 库不 fork、不 exit、不打印日志(日志 sink 注入)、不隐式创建线程 |
+| 12 | **一致性测试套件** | `xplugin-conformance`:第三方组件/插件用同一套用例验证行为合规 |
 
 ---
 
-## 3 C 语言现实硬约束(架构必须接纳,不可回避)
-
-1. **dlopen 动态库 ABI 脆弱**:版本管理框架自行实现。
-2. **无内存隔离**:进程内组件段错误、野指针直接杀死宿主进程。
-3. **全局符号污染**:极易发生符号冲突。
-4. **dlclose 不安全**:代码段残留、静态变量残留;不支持可靠热卸载。
-5. **没有类型系统**:接口契约完全靠手写函数指针 vtable 模拟。
-6. **没有自动回滚**:注册 Opcode、注册 Pass、注册事件回调,必须手动登记 undo,实现 C 版 effect。
-7. **没有内置事件循环**:事件总线需要手写。
-8. **堆边界风险**:动态库与主程序 malloc/free 堆可能不一致;必须统一注入分配器。
-
----
-
-## 4 双执行域模型
-
-### 模式 A:进程内组件(对标 Cordis)
-
-组件可以静态编译进二进制,也可以 dlopen 动态加载;适合编译器 Pass、虚拟机指令扩展;组件可信,追求高性能。
-
-### 模式 B:外进程组件(对标 go-plugin)
-
-组件编译为独立可执行文件,IPC 报文通信;用于高风险第三方组件、外部代码生成器、外部解析器,提供故障隔离。
-
-### 工程策略
-
-- 绝大多数性能敏感工具链组件走模式 A;不可信外部代码强制模式 B。
-- **硬性约束:对外服务 vtable 契约 100% 统一;业务代码不需要 if-else 区分本地/远程**,由代理层屏蔽差异。
-
----
-
-## 5 整体分层架构
+## 3 总体架构:三档可裁剪
 
 ```
-┌─────────────────────────────────────┐
-│ 业务应用层:编译器 / 链接器 / 虚拟机实例 │
-│ 只消费服务、订阅事件;绝不直接调用组件内部符号 │
-└───────────────┬─────────────────────┘
-                │
-┌───────────────▼─────────────────────┐
-│        微内核 Core(最小内核)          │
-│ 上下文 Ctx|服务注册表|事件总线|组件管理器 │
-│ Effect 副作用栈|依赖拓扑排序|跨域调用代理 │
-└───────┬──────────────────┬──────────┘
-        │                  │
-┌───────▼───────┐  ┌───────▼─────────┐
-│ 内存执行域     │  │ 隔离执行域        │
-│ (.so/.a)      │  │ 子进程 + IPC     │
-│ 直接函数调用   │  │ IPC 代理调用      │
-└───────────────┘  └─────────────────┘
+┌──────────────────────────────────────────────────┐
+│ 宿主应用(VM / 编译器 / 服务进程 / CLI 工具)         │
+│ 只消费服务、订阅事件;不触碰组件内部符号               │
+└───────────────────────┬──────────────────────────┘
+                        │
+┌───────────────────────▼──────────────────────────┐
+│                core(必选,≤1500 行)                │
+│  xpl_ctx │ effect 栈 │ 服务注册表 │ 事件总线        │
+│  组件元数据 + 拓扑排序 + 事务化 install              │
+├──────────────────────────────────────────────────┤
+│         loader(可选,编译宏 XPLUGIN_LOADER)        │
+│  dlopen/LoadLibrary · 元符号导出协议 · 失败回滚      │
+├──────────────────────────────────────────────────┤
+│        remote(可选,编译宏 XPLUGIN_REMOTE)         │
+│  fork-exec supervisor · socketpair IPC · TLV 编解码 │
+│  代理 vtable · 事件双向转发 · 崩溃检测/重启           │
+└──────────────────────────────────────────────────┘
 ```
 
-**跨域调用代理层是整个架构的粘合剂**。业务拿到的永远是代理 vtable 句柄;代理内部判断:直接内存跳转,或者打包报文 IPC 调用子进程。
+- **core**:纯算法库,唯一外部依赖 libc(且经分配器可替换);无线程、无文件、无信号——嵌入式裸机只要有分配器就能用。
+- **loader**:在 core 上加动态库加载;平台差异(POSIX/Win)收口在本模块内。
+- **remote**:在 core 上加进程隔离域;协议自包含,不依赖 loader(外进程组件是独立可执行文件)。
+- 模块间依赖只允许向下;remote 不依赖 loader,loader 不依赖 remote。
 
 ---
 
-## 6 微内核核心子系统设计
+## 4 公共契约
 
-### 6.1 根上下文 Ctx + Effect 可逆副作用栈
+### 4.1 命名与版本
 
-Ctx 是整个实例的根容器;一个 Ctx 对应一套完整独立环境,支持多编译会话、多虚拟机实例并行。
+- API 前缀 `xpl_`,公共宏 `XPL_*`,单公共头 `include/xplugin/xplugin.h`(loader/remote 各自附加头 `xplugin/loader.h`、`xplugin/remote.h`)。
+- 库版本 `XPLUGIN_VERSION_MAJOR/MINOR`;ABI 契约版本 `XPLUGIN_ABI_VERSION`(当前 1)。
+- 版本号打包:`(major<<16)|minor`;握手规则 `xpl_version_compatible(have, need)`:**major 必须相等,provider minor ≥ 需求 minor**。
 
-- 所有组件回调、服务调用的第一个参数必须是 `Ctx*`;严格禁止组件内部可变全局 static 变量。
-
-**Effect 栈核心价值**:C 语言没有 RAII/GC;每一次注册(注册 opcode、注册 pass、注册事件回调),调用 `ctx_effect(ctx, undo_cb, data)` 登记撤销动作。卸载组件 / `ctx_destroy()` 时,**逆序回放 effect 栈(后注册,先撤销)**,自动清理全部注册,不需要组件手动写析构逻辑。
-
-Ctx 内部包含:
-
-| 成员 | 职责 |
-|------|------|
-| Effect 栈数组 | 可逆副作用登记与逆序回放 |
-| `ServiceRegistry*` | 服务注册表 |
-| `EventBus*` | 事件总线 |
-| `ComponentManager*` | 组件管理器 |
-| `Allocator*` | 可注入内存分配器 |
-| `ErrorState*` | 错误上下文 |
-
-关键 API:
+### 4.2 错误模型
 
 ```c
-Ctx*    ctx_new(Allocator*);                        /* 创建上下文 */
-void    ctx_effect(Ctx*, undo_fn, void* userdata);   /* 登记可逆副作用 */
-void    ctx_destroy(Ctx*);                           /* 逆序回放 effect,销毁全部资源 */
+typedef enum xpl_status {
+    XPL_OK       = 0,
+    XPL_ENOMEM   = 1,   /* 分配失败(经注入分配器) */
+    XPL_EINVAL   = 2,   /* 参数非法(NULL name、空 install 等) */
+    XPL_ENOTFOUND= 3,   /* 服务/组件/事件不存在 */
+    XPL_EVERSION = 4,   /* ABI 版本握手失败 */
+    XPL_ECYCLE   = 5,   /* 依赖环 */
+    XPL_EDUP     = 6,   /* 服务名重复提供 */
+    XPL_EDEP     = 7,   /* 依赖缺失(install 时报全缺失清单) */
+    XPL_EFAILED  = 8,   /* 组件 install 回调返回失败 */
+    XPL_ECAP     = 9,   /* effect 栈/表容量耗尽 */
+    XPL_ESTALE   = 10,  /* remote:子进程失效/通道断开 */
+    XPL_EPROTO   = 11   /* remote:协议帧错误 */
+} xpl_status;
 ```
 
-### 6.2 服务注册表 + ABI 契约 + 版本握手 + 跨域代理层
+- 全部 API 返回 `xpl_status`(查询类返回指针,NULL+状态可查)。
+- 诊断:`xpl_ctx_last_error(ctx, char* buf, size_t n)` 取 ctx 局部的最近错误详情——**不依赖 errno,无线程局部存储**(与 4.5 线程模型一致)。
+- 库内禁止 abort/exit/裸 assert;`XPL_ASSERT` 仅 Debug 编译,失败走日志 sink 不终止。
 
-> 原则:宿主、组件只依赖头文件抽象 vtable 契约;永远不直接链接调用具体实现函数。
-
-1. 接口契约放在独立头文件;头文件只定义 vtable 结构体,无实现。
-2. vtable 固定首字段 `uint32_t version`;注册时执行版本握手;版本不兼容直接拒绝注册(go-plugin handshake)。
-3. 服务注册表:字符串服务名映射到 vtable。
-4. 查询:`service_get(ctx, "xxx.service")` 拿到 vtable 指针。
-5. 同一服务名可以注册多个实现,支持优先级;支持运行时替换 vtable(解释器/JIT 切换)。
-
-**跨域代理层关键点**:
-
-- 模式 A 内存域:注册表存放真实 vtable;代理层透明直通。
-- 模式 B 隔离域:注册表存放**代理虚拟 vtable**。代理 vtable 的每一个函数,内部做序列化、IPC 报文发送、等待应答;上层业务调用方式完全一致,感知不到是子进程。
-- 硬性约束:标记为支持隔离域的服务接口**禁止传递裸 C 指针**;只能传递可序列化内存块——裸指针不能跨进程地址空间。
-
-服务命名示例:
-
-| 服务名 | 含义 |
-|--------|------|
-| `vm.executor` | 虚拟机执行后端 |
-| `compiler.pass.ir_opt` | IR 优化 Pass |
-| `linker.reloc.x86_64` | x86-64 重定位处理器 |
-| `parser.syntax` | 语法解析服务 |
-
-### 6.3 事件总线 EventBus
-
-定位:横切关注点,**只做通知广播,不做业务调用,没有返回值语义**。
-
-- 订阅事件时,`bus_on` 内部自动调用 `ctx_effect` 登记回调撤销;ctx 销毁自动解绑回调。
-- 隔离域场景支持事件双向穿透:子进程 emit 的事件通过 IPC 转发到主进程总线;主进程事件也可以投递到子进程插件。
-
-典型事件:
-
-- 编译器:`pass:before`、`pass:after`
-- 链接器:`reloc:before`、`reloc:after`
-- 虚拟机:`vm:instr:before`、`vm:instr:after`、`gc:begin`
-
-**服务调用 vs 事件(明确区分,不许混用)**:
-
-| 模式 | 用途 | 是否期待返回值 | 支持执行域 |
-|------|------|--------------|-----------|
-| 服务调用 Service | 执行业务逻辑,获取计算结果 | 是,同步返回 | 内存域 / 隔离域(代理) |
-| 事件 Event | 通知、钩子、trace、日志、拦截改写 | 无返回值广播 | 内存域 / 隔离域事件转发 |
-
-> 硬性约束:禁止拿事件总线做 RPC 调用;带返回值的业务逻辑全部走服务 vtable。
-
-### 6.4 组件元数据 & 依赖拓扑排序
-
-无论静态编译组件,还是 dlopen 动态库组件,统一 `ComponentMeta` 元数据:
+### 4.3 分配器
 
 ```c
-typedef struct ComponentMeta {
-    const char* name;
-    const char** provides;             /* 当前组件提供哪些服务 ID */
-    const char** requires;             /* 当前组件依赖哪些服务 ID */
-    int (*install)(Ctx* ctx);          /* 组件入口:注册服务、订阅事件;
-                                          所有副作用必须 ctx_effect 包裹 */
-} ComponentMeta;
+typedef struct xpl_allocator {
+    void* (*alloc)(void* user, size_t size);
+    void* (*realloc)(void* user, void* p, size_t size);
+    void  (*free)(void* user, void* p);
+    void* user;
+} xpl_allocator;            /* 传 NULL = libc 默认 */
 ```
 
-组件管理器工作流程:
+- 框架**全部**堆分配经此收口(注册表节点、事件订阅、effect 栈、组件记录)。
+- 宿主的业务对象不归框架管(如 xvm 的 GC 堆对象走 `gc_alloc_typed`,框架不经手)。
+- 分配失败统一映射 `XPL_ENOMEM`,不 abort。
 
-1. 收集全部组件元数据(静态数组 / dlopen 导出符号读取 `ComponentMeta*`)。
-2. 根据 `provides / requires` 构建有向依赖图;检测循环依赖,报错终止。
-3. 拓扑排序得到安全 install 顺序,顺序调用 `install(ctx)`。
-4. ctx 销毁时,effect 栈逆序自动撤销全部注册。
+### 4.4 生命周期状态机(CAS 收口)
 
-dlopen 动态库额外强制约束:
+```
+xpl_ctx:   NEW ──install()──► RUNNING ──destroy()──► DESTROYING ──► DESTROYED
+组件实例:   LOADED ──install 成功──► INSTALLED
+                                 └─install 失败──► FAILED(已回滚,无残留)
+remote 子进程: SPAWNING ─► HELLO_OK ─► SERVING ─► (崩溃/退出) DEAD ─(重启)─► SPAWNING
+```
 
-1. 内部符号使用 `-fvisibility=hidden`,仅导出 ComponentMeta 元符号,减少符号污染。
-2. 内存分配**必须使用 Ctx 注入的 Allocator,禁止直接调用 libc malloc/free**,防止跨库堆损坏。
-3. dlclose 不做可靠卸载,仅逻辑上通过 effect 做业务撤销。
+- 流转唯一经内部 `xpl_cas` 收口点,生命周期字段直写是违规(静态可查)。
+- `ctx_destroy` 可重入保护:DESTROYING 状态下再次调用返回 `XPL_EINVAL` 并记日志。
 
-### 6.5 外进程组件模型(C 版 go-plugin)
+### 4.5 线程模型
 
-1. 组件编译为独立可执行程序;宿主 spawn/fork-exec 启动子进程;使用 `socketpair` 或 stdout/stdin 作为 IPC 字节流,不使用 TCP 端口。
-2. 使用轻量二进制序列化(protobuf-c / flatbuffers 级别);**不引入 gRPC**。
-3. 启动阶段执行 ABI 版本握手;版本不兼容直接杀掉子进程。
-4. 宿主注册到服务注册表的是代理 vtable,代理内部完成:序列化请求 → IPC 发送报文 → 等待应答报文 → 反序列化结果返回上层。
-5. 子进程内部运行一份裁剪版微内核,同样拥有服务注册表、事件总线;子进程内部调用依然是本地调用,IPC 仅仅作为进程边界桥梁。
-6. 宿主监控子进程退出;子进程崩溃时检测 IPC 通道断开;抛出系统事件,标记插件失效,可选重启子进程;**主宿主进程继续运行,不会崩溃**。
+- **core/ctx 非线程安全**,单线程所有权;多线程宿主每线程一个 ctx,或自行外部加锁——文档明示,不假装安全。
+- remote 的 supervisor 串行化对子进程的调用(v1 同步请求-应答;异步池为 v2 扩展)。
+- loader 的 dlopen/LoadLibrary 本身线程安全(平台保证)。
 
-> 性能代价:序列化 + IPC;高频细粒度 IR 变换、虚拟机解释循环禁止放到隔离域。
+### 4.6 日志
 
----
+```c
+typedef void (*xpl_log_fn)(void* user, int level, const char* fmt, va_list ap);
+void xpl_ctx_set_log(xpl_ctx*, xpl_log_fn, void* user);   /* 默认:静默 */
+```
 
-## 7 业务场景落地映射
-
-### 7.1 虚拟机
-
-1. 微内核 Ctx 不内置任何 Opcode 处理器;所有指令集扩展都是普通组件。
-2. 组件 install 注册 opcode 处理器;同时 `ctx_effect` 登记反注册 undo。
-3. `vm.executor` 作为可替换命名服务,实现解释器 / JIT 后端切换。
-4. 事件钩子:`vm:instr:before` / `vm:instr:after`,组件实现 trace、断点、性能统计。
-
-### 7.2 编译器 Pass 流水线
-
-传统硬编码 Pass 数组被替换为组件化模型:
-
-1. 全部 Pass 作为组件,注册到服务注册表。
-2. 通过 `requires/provides` 声明依赖;框架拓扑排序自动生成流水线顺序。
-3. Pass 执行前后抛出事件;外部组件监听事件,实现 IR 打印、校验、IR 改写。
-4. 新增优化 Pass,不需要修改编译器主循环源码。
-
-### 7.3 链接器
-
-1. 不同架构重定位处理器作为可插拔命名服务。
-2. 重定位、符号解析各阶段抛出事件;插件实现符号审计、map 导出、段合法性校验。
+库内任何输出必须经此 sink;默认零输出。
 
 ---
 
-## 8 完整启动执行流程
+## 5 核心 API 规格
 
-1. 创建 `Ctx` 上下文,注入自定义内存分配器。
-2. 收集全部组件元数据:静态编译组件 + dlopen 扫描得到动态库组件元信息。
-3. 组件管理器构建依赖图,拓扑排序,检测循环依赖。
-4. 按照拓扑顺序调用每个组件 `install(ctx)`;组件内部注册服务、订阅事件;所有注册副作用全部调用 `ctx_effect` 登记 undo。
-5. 上层业务调用 `service_get()` 获取服务 vtable,执行编译 / 链接 / 虚拟机业务。
-6. 业务完成;调用 `ctx_destroy(ctx)`,逆序回放全部 effect 栈,自动撤销注册,释放组件资源。
+> 完整签名以下为准;实现细节见 `roadmap.md` 各里程碑。
+
+### 5.1 上下文与 effect 栈
+
+```c
+typedef struct xpl_ctx xpl_ctx;
+
+xpl_ctx* xpl_ctx_new(const xpl_allocator* a);
+xpl_status xpl_ctx_destroy(xpl_ctx* ctx);      /* 逆序回放全部 effect,回收资源 */
+
+/* effect:自定义可逆副作用(注册类 API 已内建,此接口供文件句柄/子进程等) */
+typedef void (*xpl_undo_fn)(xpl_ctx* ctx, void* userdata);
+
+xpl_status xpl_effect_push(xpl_ctx*, xpl_undo_fn undo, void* userdata);
+size_t     xpl_effect_mark(xpl_ctx*);                  /* 记录回滚水位 */
+xpl_status xpl_effect_rollback_to(xpl_ctx*, size_t mark); /* 逆序回放到水位 */
+```
+
+### 5.2 服务注册表
+
+```c
+/* 所有服务 vtable 的公共序言:version 必须是第一个成员 */
+typedef struct xpl_any_service {
+    uint32_t version;
+} xpl_any_service;
+
+xpl_status   xpl_service_bind(xpl_ctx*, const char* name, void* service_vtable);
+void*        xpl_service_resolve(xpl_ctx*, const char* name, uint32_t need_version);
+xpl_status   xpl_service_unbind(xpl_ctx*, const char* name);
+
+int          xpl_version_compatible(uint32_t have, uint32_t need);
+```
+
+- `bind`:读 `((xpl_any_service*)vt)->version` 与核心 ABI 比对(约束:version ≥1);重名 `XPL_EDUP`;**自动 push undo**。
+- `resolve`:哈希查找 + 版本握手;不匹配返回 NULL 并置 `XPL_EVERSION`。
+- 替换语义:先 `unbind` 再 `bind`(均带 undo);bind/unbound 各发系统事件(§9),持缓存指针的宿主监听 `xpl:service:unbound` 失效重取。
+- 服务名规范:`<域>.<名称>`,长度 ≤63,字符集 `[a-z0-9._]`;`xpl:*` 事件/服务前缀保留给框架。
+
+### 5.3 事件总线
+
+```c
+typedef void (*xpl_event_fn)(xpl_ctx* ctx, const char* name,
+                             void* payload, void* userdata);
+
+xpl_status xpl_bus_on(xpl_ctx*, const char* name, xpl_event_fn fn, void* userdata);
+void       xpl_bus_off(xpl_ctx*, const char* name, xpl_event_fn fn, void* userdata);
+
+/* 快路径:事件名驻留为 int id,emit 只查订阅计数 */
+int  xpl_bus_intern(xpl_ctx*, const char* name);
+void xpl_bus_emit(xpl_ctx*, const char* name, void* payload);   /* 通用路径 */
+void xpl_bus_emit_id(xpl_ctx*, int event_id, void* payload);    /* 零订阅≤1分支 */
+```
+
+- 同步派发,按订阅先后顺序;回调内禁止 bind/unbind/emit 同名事件(重入保护,违者记日志并忽略该次操作)。
+- `bus_on` 自动 push undo;`bus_off` 幂等。
+- payload 类型由事件名约定(文档责任归宿主);remote 域跨进程 payload 需注册 codec(§8.4)。
+
+### 5.4 组件与拓扑装配
+
+```c
+typedef struct xpl_component {
+    const char* name;            /* 组件名(非服务名) */
+    const char* const* provides; /* 提供的服务名,以 NULL 结尾 */
+    const char* const* requires; /* 依赖的服务名,以 NULL 结尾 */
+    xpl_status (*install)(xpl_ctx* ctx, void* userdata);
+    void* userdata;
+} xpl_component;
+
+xpl_status xpl_components_add(xpl_ctx*, const xpl_component* c);
+xpl_status xpl_components_install(xpl_ctx*);
+```
+
+- `install` 前置校验:重复 provides(`XPL_EDUP`)、依赖缺失(`XPL_EDEP`,错误详情列全缺失项)、依赖环(`XPL_ECYCLE`)。
+- 排序:Kahn 算法,**平局按 `components_add` 注册序**——输出稳定可复现。
+- **事务语义**:`install` 开始记 `effect_mark`;任一组件返回非 OK 或框架出错 → `rollback_to(mark)` → 已装组件的注册全部撤销,返回 `XPL_EFAILED` + 详情。成功路径零特殊分支,失败路径与 destroy 同一实现。
 
 ---
 
-## 9 C 语言风险清单与规避
+## 6 确定性与成本模型
 
-| # | 风险 | 规避策略 |
-|---|------|---------|
-| 1 | 全局/静态可变变量 | 组件禁止;否则多 Ctx 多实例直接错乱 |
-| 2 | dlopen 无内存隔离 | 进程内组件野指针直接 crash 整个工具链;不可信代码强制走模式 B 外进程 IPC |
-| 3 | Effect 撤销顺序 | 栈结构,后注册先撤销,不能颠倒 |
-| 4 | ABI 版本管理 | vtable 结构体新增字段只能追加到末尾;version 字段做分支兼容;禁止原地修改旧字段 |
-| 5 | 动态库符号污染 | 编译选项 `-fvisibility=hidden`,仅暴露组件元数据符号 |
-| 6 | 跨动态库堆不匹配 | dlopen 组件必须使用 Ctx 注入分配器,不能直接 libc malloc/free |
-| 7 | 事件总线滥用 | 事件只做通知;带返回值业务逻辑必须走服务 vtable 调用 |
-| 8 | 隔离域传裸指针 | 支持外进程的服务接口全部使用序列化内存块,禁止裸指针 |
+| 操作 | 复杂度 | 堆分配次数 | 备注 |
+|------|--------|-----------|------|
+| `xpl_service_bind` | O(1) 均摊 | 1(表节点)+1(undo) | 名字长度 ≤63,复制存储 |
+| `xpl_service_resolve` | O(1) 均摊 | 0 | 热路径零分配 |
+| `xpl_bus_on/off` | O(1) 均摊 | 1 / 0 | |
+| `xpl_bus_emit`(通用) | O(哈希探测 + 该事件订阅数) | 0 | 零订阅 = 一次探测即返回 |
+| `xpl_bus_emit_id` | O(该事件订阅数) | 0 | 零订阅 ≤1 分支(读计数) |
+| `xpl_components_install` | O(V+E) | 组件数相关 | Kahn 稳定排序 |
+| `ctx_destroy` | O(总 effect 数) | 0(只回放) | 逆序 |
+| remote 调用(代理) | 1×RTT + 序列化 | 视 codec | v1 同步 |
 
----
+确定性保证(同样输入 → 同样行为):
 
-## 10 执行域选型决策表
-
-| 使用场景 | 运行模式 | 选择理由 |
-|---------|---------|---------|
-| 虚拟机指令扩展、IR 优化 Pass、链接器重定位处理器 | 模式 A:进程内组件 | 性能关键;组件可信;零额外开销插拔 |
-| 第三方不可信解析器、外部代码生成后端 | 模式 B:外进程 IPC 插件 | 故障隔离,保护主编译器/虚拟机宿主进程 |
+1. 拓扑序唯一(平局按注册序)。
+2. 事件派发序 = 订阅序。
+3. undo 序 = 注册序严格逆序。
+4. 无隐藏哈希随机化(自研哈希,固定种子——单进程内无 HashDoS 威胁面,remote 协议层自带帧校验)。
 
 ---
 
-## 11 架构演进扩展方向
+## 7 loader 模块(可选)
 
-1. **插件配置系统**:组件元数据携带配置 schema;内核统一加载配置,组件不直接读取配置文件。
-2. **版本约束增强**:服务 ID 附带语义化版本;依赖解析支持版本范围匹配。
-3. **可观测性 Trace**:事件总线内置 trace 事件,统计每个服务调用耗时、组件加载耗时;定位慢 Pass,用于工具链性能分析。
-4. **隔离域子进程沙箱增强**:子进程增加资源限制(CPU 时间、内存上限)。
-5. **调试诊断模式**:可以强制把原本运行在内存域的组件代理跑在外进程隔离域,用于捕获内存越界,作为调试工具。
-6. **有限快照能力**:对 Ctx 状态做有限快照,用于编译器重放调试。
+`XPLUGIN_LOADER` 编译宏启用;公共头 `xplugin/loader.h`。
+
+```c
+typedef struct xpl_loaded_lib xpl_loaded_lib;
+
+/* 扫描目录(后缀 .so/.dll/.dylib),逐个 dlopen 读取元符号并入 components 待装队列 */
+xpl_status xpl_loader_scan_dir(xpl_ctx*, const char* dir);
+/* 精确加载单个库 */
+xpl_status xpl_loader_load(xpl_ctx*, const char* path);
+```
+
+插件侧导出协议(唯一符号):
+
+```c
+/* 插件源码内一行导出;内部确保 -fvisibility=hidden 下唯一外部符号 */
+XPLUGIN_COMPONENT_EXPORT(my_plugin_name)
+```
+
+- 元符号:`const xpl_component* xplugin_component(void);`,宏生成,名字固定。
+- 加载失败(dlopen 错误/符号缺失/校验失败)→ 回滚该库全部登记,ctx 完好。
+- **不做可靠 dlclose**:库句柄保持到进程退出(代码段/静态变量残留问题);"卸载"仅指 effect 逻辑撤销。文档明示。
+- 平台差异(dlopen/LoadLibrary)收口在 `loader/platform_{posix,win}.c`,公共头零平台宏。
 
 ---
 
-## 12 架构收获总览
+## 8 remote 模块(可选)
 
-### 12.1 取自 Cordis / DSH
+`XPLUGIN_REMOTE` 启用;公共头 `xplugin/remote.h`。
 
-1. 真正微内核:内核只负责生命周期、上下文、effect 回滚、服务注册表、事件总线;内核不含任何业务逻辑。
-2. `Ctx*` 作为唯一胶水;根除全局状态,支持多实例并行编译、多虚拟机。
-3. **可逆副作用 Effect 栈机制**,专门解决 C 语言插件卸载资源泄漏、残留回调的痛点。
-4. 组件声明 requires/provides;依赖图拓扑排序自动组装流水线;Pass、模块不需要硬编码执行顺序。
-5. 事件总线统一处理横切关注点:trace、debug、IR 改写、统计、校验。
-6. 对等组件模型,没有特殊内核模块,全部能力都可以被替换。
+### 8.1 进程模型
 
-### 12.2 取自 HashiCorp go-plugin
+- 组件编译为独立可执行文件;宿主 `xpl_remote_spawn` fork-exec 启动,`socketpair`(或 Windows 匿名管道)作字节流;不用 TCP 端口。
+- 子进程内跑裁剪版 core(同代码库编译开关),拥有自己的注册表/总线;IPC 只是进程边界桥梁。
+- **宿主是协调者**:库不隐式 spawn——`xpl_remote_spawn` 由宿主显式调用。
 
-1. **接口契约优先**,头文件定义 vtable ABI;宿主依赖抽象接口,而不是具体实现。
-2. 加载阶段版本握手,保障 ABI 兼容性,不兼容直接拒绝。
-3. 双执行域设计;提供外进程 IPC 组件模型,实现故障域隔离,保护主工具链宿主。
-4. 代理层屏蔽本地/远程调用差异,上层业务代码不需要感知组件运行在哪一个进程。
-5. 宿主定位为协调者,业务逻辑下沉组件。
+### 8.2 协议(TLV 帧)
+
+```
+帧: magic "XPL1" | msg_type | req_id | payload_len | payload(TLV)
+TLV: tag(varint) | len(varint) | bytes
+消息: HELLO{core_ver, abi} / HELLO_OK / HELLO_ERR
+     CALL{service, op, args_tlv} / RET{status, ret_tlv} / ERR
+     EVENT{name, payload_tlv}          (双向)
+     SUBSCRIBE{name} / UNSUBSCRIBE
+     PING / PONG / SHUTDOWN
+```
+
+- 小端;varint 采用 LEB128;帧头定长 12B。
+- v1 同步请求-应答(req_id 预留多路复用);校验和 v2 再议(本地 socketpair 通道,非不可信网络)。
+
+### 8.3 代理 vtable
+
+- 宿主侧 `service_bind` 绑定的是**代理 vtable**:每个函数做 序列化 → 帧发送 → 等应答 → 反序列化。
+- v1 手写代理 + 宏样板辅助(`XPL_REMOTE_PROXY_*`);代码生成器归 M5+。
+- 约束:**支持 remote 的服务接口禁止裸 C 指针参数**;只能传可序列化 blob(长度+字节)或值类型——代理生成宏在编译期以类型 trait 拒绝裸指针(静态断言)。
+
+### 8.4 事件穿透与 codec
+
+- 跨进程事件 payload 必须注册 codec:`xpl_remote_codec(ctx, event_name, encode_fn, decode_fn)`;未注册的 emit 跨域时丢弃并 WARN(经日志 sink)。
+- 子进程 emit → supervisor 转发到宿主总线;宿主 emit → 转发给已 SUBSCRIBE 的子进程。
+
+### 8.5 故障处理
+
+- supervisor 监控子进程(管道 EOF / waitpid);崩溃 → 全部其代理服务标记失效 → 系统事件 `xpl:plugin:died{lib, exit_code}` → 按策略(不重启/重启 N 次/重启不限)重新 spawn。
+- 失效后调用代理服务返回 `XPL_ESTALE`;**宿主进程不崩**。
+
+---
+
+## 9 系统事件与可观测
+
+框架自身经事件总线暴露生命周期(前缀 `xpl:`,普通订阅方式):
+
+| 事件 | 时机 | payload |
+|------|------|---------|
+| `xpl:service:bound` | bind 成功 | `const char* name` |
+| `xpl:service:unbound` | unbind | 同上 |
+| `xpl:component:installed` | 单组件装好 | `const char* name` |
+| `xpl:component:failed` | install 失败(含回滚完成) | `struct { const char* name; xpl_status why; char detail[128]; }` |
+| `xpl:plugin:died` | remote 子进程死亡 | `struct { const char* lib; int exit_code; }` |
+| `xpl:plugin:restarted` | 重启完成 | 同上 |
+
+宿主可在此之上自建 trace(每次服务调用的包装代理、耗时统计)——框架不内建性能计数(v2 扩展方向)。
+
+---
+
+## 10 C 语言风险清单
+
+| # | 风险 | 规避 |
+|---|------|------|
+| 1 | 组件内可变全局/静态 | 规范禁止;多 ctx 并行测试用例强制验证 |
+| 2 | dlopen 无内存隔离 | 不可信代码走 remote 域;进程内崩溃无法防御(文档明示) |
+| 3 | effect 撤销顺序错乱 | 栈语义唯一实现;rollback 与 destroy 共用同一段回放代码 |
+| 4 | ABI 演进破坏兼容 | vtable 只允许尾部追加字段;version major/minor 语义见 4.1;禁止原地改旧字段 |
+| 5 | 动态库符号污染 | `-fvisibility=hidden` + 唯一元符号;loader 提供 nm 自检脚本 |
+| 6 | 跨库堆不匹配 | 全部框架分配走注入 allocator;宿主对象不经框架分配 |
+| 7 | 事件总线被当 RPC | 文档 + conformance 用例:事件回调无返回值语义 |
+| 8 | remote 传裸指针 | 代理宏编译期静态断言拒绝;接口规范要求 blob |
+| 9 | dlclose 残留 | 不做可靠卸载,句柄留到进程退出 |
+| 10 | ctx 误跨线程 | 线程模型文档化;DEBUG 构建加 owner-tid 断言 |
+| 11 | 重入破坏注册表 | bus 回调内禁 mutating API,记日志忽略 |
+
+---
+
+## 11 通用性:消费场景矩阵
+
+| 场景 | 用到的档位 | 典型用法 |
+|------|-----------|---------|
+| VM/解释器(xvm) | core(远期 +remote) | executor 切换、观测订阅、校验策略 |
+| 编译器/链接器 | core + loader | Pass 流水线拓扑装配、重定位处理器 |
+| 服务进程 | core + loader | 配置驱动的模块启停;灰度替换实现 |
+| CLI 工具 | core + remote | 不可信格式解析器放子进程,崩溃不杀 CLI |
+| 测试框架 | core | fixture 组件按依赖装配,用例结束自动拆卸 |
+| 嵌入式 | 仅 core | 静态组件表 + 自定义 allocator,零 OS 依赖 |
+| 游戏/图形引擎 | core + loader | 平台后端、资源 codec 插件 |
+
+跨场景不变量:**core 五件套 API 不变;宿主对象模型/值系统完全自由**(payload 与 vtable 参数类型归宿主定义,框架只见 `void*` 与 blob)。
+
+---
+
+## 12 设计修正记录(v1 → v2)
+
+> v1 = 本文档前一版蓝图(完整保留于 git 历史);v2 修正均源自"是否过度设计"的评审结论。
+
+| # | v1 蓝图 | v2 修正 | 理由 |
+|---|---------|---------|------|
+| 1 | 组件每次注册**手动** `ctx_effect` 登记 undo | 注册类 API(bind/on)**自动**登记 undo,手写 effect 仅限自定义资源 | 手动登记必被遗漏;事务性应是 API 的属性,不是使用者的义务 |
+| 2 | 服务多实现 + 优先级查找进核心 | 移出 v1 核心(平级多实现);保留 unbind+bind 替换语义 | 零个已知消费者;优先级查找是投机抽象 |
+| 3 | 单一大框架整体采用 | 三档可裁剪:core / +loader / +remote,编译宏控制 | 嵌入式与 xvm 类宿主只需 core;隔离与动态加载是两种独立需求 |
+| 4 | `vm:instr:*` 高频事件、"所有 opcode 都是组件" | 高频路径明确排除;事件快路径 intern id 化 | 每 Hz>1e6 的接口不进间接层是硬约束 |
+| 5 | destroy 与失败清理两套逻辑 | install 失败回滚 = destroy 同一 `rollback` 实现 | 两套清理路径必然漂移 |
+| 6 | 未定义线程模型 | 明确 core 非线程安全 + owner 断言 + supervisor 串行化 | 假装线程安全比明说不安全危险 |
+| 7 | 隐含可用任意分配器/日志 | allocator 收口 + 日志 sink 注入 + 默认静默 | 库纪律:不打日志、不 fork、不 exit |
+| 8 | payload/值类型隐含宿主语义 | 框架只见 `void*`/blob;跨进程 codec 由宿主注册 | 通用性关键:框架不定义值系统 |
+| 9 | 固定 P0-P5 全量实施计划 | 触发式启用(见 roadmap.md §0);core 之外模块各有准入触发条件 | 防止为集成而集成 |
+| 10 | 目标 ≤ 无规模约束 | core ≤1500 行 / loader ≤600 / remote ≤2000 硬预算 | 规模是过度设计的可测量防线 |
+
+---
+
+## 附录 A:v1 蓝图保留要点(业务映射与流程,通用性素材)
+
+> v2 正文按"通用框架"重写后,以下 v1 蓝图的应用场景与流程要点原样保留于此——它们是 §11 消费矩阵的具体化,也是宿主接入时的参考形态。
+
+### A.1 虚拟机场景
+
+1. 微内核 ctx 不内置任何 Opcode 处理器;指令集扩展是普通组件(高频路径约束见 §12-4 修正)。
+2. 组件 install 注册 opcode 处理器;注册 API 自动登记 undo。
+3. `vm.executor` 作为可替换命名服务,实现解释器/JIT 后端切换(unbind+bind)。
+4. 事件钩子 `vm:instr:before/after`(仅观测构建)、`gc:begin`,组件实现 trace、断点、性能统计。
+
+### A.2 编译器 Pass 流水线
+
+1. 全部 Pass 作为组件,注册到服务注册表(如 `compiler.pass.ir_opt`)。
+2. 通过 requires/provides 声明依赖;框架拓扑排序自动生成流水线顺序。
+3. Pass 执行前后抛 `pass:before/after` 事件;外部组件监听实现 IR 打印、校验、改写。
+4. 新增优化 Pass 不需要修改编译器主循环源码。
+
+### A.3 链接器场景
+
+1. 不同架构重定位处理器作为可插拔命名服务(如 `linker.reloc.x86_64`)。
+2. 重定位、符号解析各阶段抛 `reloc:before/after` 事件;插件实现符号审计、map 导出、段合法性校验。
+
+### A.4 完整启动执行流程
+
+1. 创建 `xpl_ctx`,注入分配器(或默认 libc)。
+2. 收集组件:`components_add` 静态组件;loader 档另加 `loader_scan_dir` 动态组件;remote 档 `remote_spawn` 外进程组件。
+3. `components_install`:校验(重名/缺失/环)→ 拓扑排序 → 按序 install;注册类 API 自动登记 undo。
+4. 任一步失败:自动逆序回滚到 install 前水位,ctx 完好可重试。
+5. 上层业务 `xpl_service_resolve` 获取服务 vtable,执行业务;订阅事件。
+6. `xpl_ctx_destroy`:逆序回放全部 effect,自动撤销注册,释放资源。
+
+### A.5 服务命名与典型事件示例
+
+服务名:`vm.executor` / `compiler.pass.ir_opt` / `linker.reloc.x86_64` / `parser.syntax`
+典型事件:`pass:before|after`、`reloc:before|after`、`vm:instr:before|after`、`gc:begin`
+
+### A.6 演进方向全集(M5 逐项触发,含两项 v2 未排期的)
+
+v2 已排期(roadmap M5):配置系统、trace 观测、semver 范围、子进程沙箱、代理代码生成、多路复用异步。
+保留待触发:
+
+7. **调试诊断模式**:强制把原本进程内的组件代理到外进程隔离域运行,用于捕获内存越界——作为调试工具(依赖 remote 档 + 代理透明性)。
+8. **有限快照能力**:对 ctx 状态做有限快照,用于装配过程重放调试(依赖:注册表/总线/组件表可序列化)。
