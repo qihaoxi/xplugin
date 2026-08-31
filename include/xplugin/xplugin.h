@@ -89,27 +89,30 @@ XPL_API xpl_status xpl_effect_push(xpl_ctx* ctx, xpl_undo_fn undo, void* userdat
 XPL_API size_t xpl_effect_mark(xpl_ctx* ctx); /* 回滚水位（install 事务用） */
 XPL_API xpl_status xpl_effect_rollback_to(xpl_ctx* ctx, size_t mark);
 
-/* ── 构建溯源（provenance，design §4.1 互补面）：configure 时采集，编译进产物 ── */
-typedef struct xpl_build_info {
-	const char* git_commit; /* 完整 hash，dirty 时带 "-dirty"；无 git 为 "nogit" */
-	const char* git_branch;
-	const char* timestamp;		 /* ISO8601 构建时刻 */
-	const char* os;				 /* 操作系统名，如 "Linux" */
-	const char* distro;			 /* 发行版名，如 "Debian GNU/Linux"；非发行版 = os */
-	const char* distro_version;	 /* 发行版版本号，如 "12"；无则 "-" */
-	const char* distro_codename; /* 发行版代号，如 "bookworm"；无则 "-" */
-	const char* kernel;			 /* 内核版本，如 "6.1.0-amd64" */
-	const char* arch;			 /* 架构，如 "x86_64" */
-	const char* host;			 /* 构建主机名（nodename） */
-	const char* toolchain;		 /* 总工具链版本，如 "GNU 15.2.0" */
-	const char* cc;				 /* compiler 详细版本串，如 "gcc (Debian 15.2.0-4 15.2.0-4) 15.2.0" */
-	const char* cc_path;		 /* compiler 可执行路径 */
-	const char* linker;			 /* 链接器名+版本，如 "GNU ld (GNU Binutils for Debian) 2.44" */
-	const char* version;		 /* 语义版本串（恒等于 XPLUGIN_VERSION_STRING） */
-} xpl_build_info_t;
+/* ── 构建溯源（provenance，design §4.1 互补面 + §4.7 类型 A：struct shadow）──
+ * 不透明结构：布局私有，字段增改不破坏 ABI；只能经访问器读取（勿按值拷贝）。 */
+typedef struct xpl_build_info xpl_build_info_t;
 
 /* 返回指向静态存储的构建信息（永不 NULL，永不失败） */
 XPL_API const xpl_build_info_t* xpl_build_info(void);
+
+/* 逐字段访问器：新增暴露字段 = 新增访问器函数（尾部追加符号，兼容） */
+XPL_API const char*
+xpl_build_info_git_commit(const xpl_build_info_t* info); /* hash，dirty 带 "-dirty"；无 git "nogit" */
+XPL_API const char* xpl_build_info_git_branch(const xpl_build_info_t* info);
+XPL_API const char* xpl_build_info_timestamp(const xpl_build_info_t* info); /* ISO8601 构建时刻 */
+XPL_API const char* xpl_build_info_os(const xpl_build_info_t* info);		/* 如 "Linux" */
+XPL_API const char* xpl_build_info_distro(const xpl_build_info_t* info);	/* 如 "Debian GNU/Linux"；非发行版 = os */
+XPL_API const char* xpl_build_info_distro_version(const xpl_build_info_t* info);  /* 如 "12"；无则 "-" */
+XPL_API const char* xpl_build_info_distro_codename(const xpl_build_info_t* info); /* 如 "bookworm"；无则 "-" */
+XPL_API const char* xpl_build_info_kernel(const xpl_build_info_t* info);		  /* 如 "6.1.0-amd64" */
+XPL_API const char* xpl_build_info_arch(const xpl_build_info_t* info);			  /* 如 "x86_64" */
+XPL_API const char* xpl_build_info_host(const xpl_build_info_t* info);			  /* 构建主机名 */
+XPL_API const char* xpl_build_info_toolchain(const xpl_build_info_t* info);		  /* 总工具链版本，如 "GNU 15.2.0" */
+XPL_API const char* xpl_build_info_cc(const xpl_build_info_t* info);			  /* cc 详细版本串 */
+XPL_API const char* xpl_build_info_cc_path(const xpl_build_info_t* info);		  /* cc 可执行路径 */
+XPL_API const char* xpl_build_info_linker(const xpl_build_info_t* info);		  /* ld 名+版本 */
+XPL_API const char* xpl_build_info_version(const xpl_build_info_t* info);		  /* 语义版本串 */
 
 /* 返回 "major.minor.patch" 库版本字符串，与 XPLUGIN_* 宏恒一致 */
 XPL_API const char* xpl_version(void);

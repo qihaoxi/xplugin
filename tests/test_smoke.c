@@ -31,22 +31,24 @@ static void test_version_macros_consistent(void) {
 static void test_build_info(void) {
 	const xpl_build_info_t* bi = xpl_build_info();
 	XPL_TEST_CHECK(bi != NULL);
-	XPL_TEST_CHECK(bi->version != NULL && strcmp(bi->version, XPLUGIN_VERSION_STRING) == 0);
-	XPL_TEST_CHECK(bi->git_commit != NULL && bi->git_commit[0] != '\0');
-	XPL_TEST_CHECK(bi->git_branch != NULL && bi->git_branch[0] != '\0');
-	XPL_TEST_CHECK(bi->timestamp != NULL && bi->timestamp[0] != '\0');
-	XPL_TEST_CHECK(bi->os != NULL && bi->os[0] != '\0');
-	XPL_TEST_CHECK(bi->distro != NULL && bi->distro[0] != '\0');
-	XPL_TEST_CHECK(bi->distro_version != NULL && bi->distro_version[0] != '\0');
-	XPL_TEST_CHECK(bi->distro_codename != NULL && bi->distro_codename[0] != '\0');
-	XPL_TEST_CHECK(bi->kernel != NULL && bi->kernel[0] != '\0');
-	XPL_TEST_CHECK(bi->arch != NULL && bi->arch[0] != '\0');
-	XPL_TEST_CHECK(bi->host != NULL && bi->host[0] != '\0');
-	XPL_TEST_CHECK(bi->toolchain != NULL && bi->toolchain[0] != '\0');
-	XPL_TEST_CHECK(bi->cc != NULL && bi->cc[0] != '\0');
-	XPL_TEST_CHECK(bi->cc_path != NULL && bi->cc_path[0] != '\0');
-	XPL_TEST_CHECK(bi->linker != NULL && bi->linker[0] != '\0');
-	XPL_TEST_CHECK(strcmp(bi->linker, "unknown") != 0);
+	/* struct shadow:布局私有,只经访问器读(docs/design.md §4.7 类型 A) */
+	XPL_TEST_CHECK(xpl_build_info_version(bi) != NULL &&
+				   strcmp(xpl_build_info_version(bi), XPLUGIN_VERSION_STRING) == 0);
+	XPL_TEST_CHECK(xpl_build_info_git_commit(bi) != NULL && xpl_build_info_git_commit(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_git_branch(bi) != NULL && xpl_build_info_git_branch(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_timestamp(bi) != NULL && xpl_build_info_timestamp(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_os(bi) != NULL && xpl_build_info_os(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_distro(bi) != NULL && xpl_build_info_distro(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_distro_version(bi) != NULL && xpl_build_info_distro_version(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_distro_codename(bi) != NULL && xpl_build_info_distro_codename(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_kernel(bi) != NULL && xpl_build_info_kernel(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_arch(bi) != NULL && xpl_build_info_arch(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_host(bi) != NULL && xpl_build_info_host(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_toolchain(bi) != NULL && xpl_build_info_toolchain(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_cc(bi) != NULL && xpl_build_info_cc(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_cc_path(bi) != NULL && xpl_build_info_cc_path(bi)[0] != '\0');
+	XPL_TEST_CHECK(xpl_build_info_linker(bi) != NULL && xpl_build_info_linker(bi)[0] != '\0');
+	XPL_TEST_CHECK(strcmp(xpl_build_info_linker(bi), "unknown") != 0);
 }
 
 int main(void) {

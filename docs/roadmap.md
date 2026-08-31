@@ -112,6 +112,7 @@ xplugin/
 
 **实现**
 
+- [ ] 服务 vtable 按 design §4.7 **类型 B** 定型:首字段 version + 只允许尾部追加;`xpl_any_service` 序言为公共契约(库只读已知前缀)。
 - [ ] 自研开放寻址小哈希(FNV-1a,固定种子,装载因子 0.75 扩容);名字复制存储,≤63 字节 + 字符集校验(`XPL_EINVAL`)。
 - [ ] `xpl_service_bind`:读 `xpl_any_service.version` ≥1;重名 `XPL_EDUP`;自动 push undo(unbind)。
 - [ ] `xpl_service_resolve`:查找 + `xpl_version_compatible`(major 等、provider minor ≥ need);失败置 last_error。
