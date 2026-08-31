@@ -21,3 +21,6 @@ CMakeUserPresets.json
 # IDE / build dirs
 .idea/
 cmake-build-*/
+
+# 生成头(configure 时由 cmake/git.cmake 写入,勿提交,勿手改)
+include/xplugin/xplugin_build_info_generated.h

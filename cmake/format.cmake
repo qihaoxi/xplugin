@@ -38,7 +38,7 @@ endforeach()
 list(REMOVE_DUPLICATES _xpl_format_files)
 list(SORT _xpl_format_files)
 
-set(_xpl_format_exclude "/cmake-build/" "/_deps/" "/generated/")
+set(_xpl_format_exclude "/cmake-build/" "/_deps/" "/generated/" "/xplugin_build_info_generated.h")
 set(_xpl_format_filtered)
 foreach(_file IN LISTS _xpl_format_files)
     set(_skip 0)

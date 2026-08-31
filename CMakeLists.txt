@@ -56,7 +56,8 @@ target_include_directories(xplugin_core PUBLIC
     $<BUILD_INTERFACE:${XPLUGIN_PROJECT_ROOT}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_include_directories(xplugin_core PRIVATE "${CMAKE_BINARY_DIR}/generated/xplugin")
+# 生成头 xplugin_build_info_generated.h 在 include/xplugin/ 下（gitignored），
+# 随 PUBLIC include 路径解析，IDE 与外部消费者所见一致
 xpl_apply_target_defaults(xplugin_core)
 
 # 触发门模块：默认 OFF，未触发不排期（docs/roadmap.md §0 触发式启用）
