@@ -15,6 +15,7 @@ function(add_xpl_test target_name source_file)
     add_executable(${target_name} ${source_file})
     target_link_libraries(${target_name} PRIVATE xplugin_core)
     xpl_apply_target_defaults(${target_name})
+    xpl_enable_buildinfo(${target_name})  # 钉住 build-info 符号，防死代码消除丢弃
     set_target_properties(${target_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${XPL_TEST_OUTPUT_DIR}"
     )

@@ -28,8 +28,20 @@ static void test_version_macros_consistent(void) {
 	XPL_TEST_CHECK(strcmp(version_to_string(), xpl_version()) == 0);
 }
 
+static void test_build_info(void) {
+	const xpl_build_info_t* bi = xpl_build_info();
+	XPL_TEST_CHECK(bi != NULL);
+	XPL_TEST_CHECK(bi->version != NULL && strcmp(bi->version, XPLUGIN_VERSION_STRING) == 0);
+	XPL_TEST_CHECK(bi->git_commit != NULL && bi->git_commit[0] != '\0');
+	XPL_TEST_CHECK(bi->git_branch != NULL && bi->git_branch[0] != '\0');
+	XPL_TEST_CHECK(bi->timestamp != NULL && bi->timestamp[0] != '\0');
+	XPL_TEST_CHECK(bi->system != NULL && bi->system[0] != '\0');
+	XPL_TEST_CHECK(bi->compiler != NULL && bi->compiler[0] != '\0');
+}
+
 int main(void) {
 	test_version_string();
 	test_version_macros_consistent();
+	test_build_info();
 	XPL_TEST_DONE();
 }

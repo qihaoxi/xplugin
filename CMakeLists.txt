@@ -39,8 +39,14 @@ option(XPLUGIN_REMOTE        "Build out-of-process remote module (M4, trigger-ga
 include(${XPLUGIN_PROJECT_ROOT}/cmake/compiler-options.cmake)
 include(${XPLUGIN_PROJECT_ROOT}/cmake/sanitizer.cmake)
 
+# ---- 构建溯源（git commit/branch + 时间戳/主机/系统/工具链 → 生成头）----
+include(${XPLUGIN_PROJECT_ROOT}/cmake/git.cmake)
+include(${XPLUGIN_PROJECT_ROOT}/cmake/buildinfo.cmake)
+xpl_generate_build_info(XPL_BUILD_INFO_HEADER)  # 生成 ${CMAKE_BINARY_DIR}/generated/xplugin/...
+
 # ---- 核心库（三档的公共底座）----
 add_library(xplugin_core STATIC
+    src/core/build_info.c
     src/core/ctx.c
     src/core/effect.c
     src/core/version.c
@@ -50,6 +56,7 @@ target_include_directories(xplugin_core PUBLIC
     $<BUILD_INTERFACE:${XPLUGIN_PROJECT_ROOT}/include>
     $<INSTALL_INTERFACE:include>
 )
+target_include_directories(xplugin_core PRIVATE "${CMAKE_BINARY_DIR}/generated/xplugin")
 xpl_apply_target_defaults(xplugin_core)
 
 # 触发门模块：默认 OFF，未触发不排期（docs/roadmap.md §0 触发式启用）

@@ -12,8 +12,8 @@
 #include <stddef.h>
 
 /* ── 库版本与 ABI 契约（design §4.1） ── */
-#define XPLUGIN_VERSION_MAJOR 0
-#define XPLUGIN_VERSION_MINOR 1
+#define XPLUGIN_VERSION_MAJOR 1
+#define XPLUGIN_VERSION_MINOR 0
 #define XPLUGIN_VERSION_PATCH 0
 /* ABI 契约版本：破坏兼容的变更（删符号/改签名/动前置字段）必须 +1 */
 #define XPLUGIN_ABI_VERSION 1
@@ -88,6 +88,20 @@ typedef void (*xpl_undo_fn)(xpl_ctx* ctx, void* userdata);
 XPL_API xpl_status xpl_effect_push(xpl_ctx* ctx, xpl_undo_fn undo, void* userdata);
 XPL_API size_t xpl_effect_mark(xpl_ctx* ctx); /* 回滚水位（install 事务用） */
 XPL_API xpl_status xpl_effect_rollback_to(xpl_ctx* ctx, size_t mark);
+
+/* ── 构建溯源（provenance，design §4.1 互补面）：configure 时采集，编译进产物 ── */
+typedef struct xpl_build_info {
+	const char* git_commit; /* 完整 hash，dirty 时带 "-dirty"；无 git 为 "nogit" */
+	const char* git_branch;
+	const char* timestamp; /* ISO8601 构建时刻 */
+	const char* host;	   /* 构建主机名 */
+	const char* system;	   /* <系统>-<架构>，如 Linux-x86_64 */
+	const char* compiler;  /* <编译器id>-<版本> */
+	const char* version;   /* 语义版本串（恒等于 XPLUGIN_VERSION_STRING） */
+} xpl_build_info_t;
+
+/* 返回指向静态存储的构建信息（永不 NULL，永不失败） */
+XPL_API const xpl_build_info_t* xpl_build_info(void);
 
 /* 返回 "major.minor.patch" 库版本字符串，与 XPLUGIN_* 宏恒一致 */
 XPL_API const char* xpl_version(void);

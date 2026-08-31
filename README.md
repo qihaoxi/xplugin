@@ -29,5 +29,6 @@
 
 - ✅ **M0 工程地基**(2026-08-31):CMake 骨架(C11 + `-Werror`/`/WX`、三档裁剪宏 `XPLUGIN_LOADER`/`XPLUGIN_REMOTE`)、ASan/TSan 双趟、`verify` target、`format` target、`.clang-format`、冒烟测试。
 - ✅ **M1a ctx + effect 栈**(2026-08-31):`xpl_ctx`(生命周期 CAS、分配器注入、日志 sink、last_error)+ `xpl_effect` 栈(push/mark/rollback_to,逆序回放,扩容),`test_ctx`/`test_effect` 三趟全绿。
+- ✅ **构建溯源 build-info**(2026-08-31):`cmake/git.cmake` 采集 git commit/branch + 时间戳/主机/系统/工具链 → 生成头;`xpl_build_info()` 运行期可查(`cmake/buildinfo.cmake` 钉符号防死代码消除)。
 - ⏭ **M1b 服务注册表 + 版本握手**(下一步):`xpl_service_bind/resolve` + `xpl_version_compatible`(见 `docs/design.md` §5.2)。
 - 本地验证:`cmake --build cmake-build-debug --target verify`(构建 + ctest 全绿)。
