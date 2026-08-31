@@ -41,6 +41,8 @@ include(${XPLUGIN_PROJECT_ROOT}/cmake/sanitizer.cmake)
 
 # ---- 核心库（三档的公共底座）----
 add_library(xplugin_core STATIC
+    src/core/ctx.c
+    src/core/effect.c
     src/core/version.c
 )
 add_library(xplugin::xplugin_core ALIAS xplugin_core)

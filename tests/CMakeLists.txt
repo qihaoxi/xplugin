@@ -23,5 +23,7 @@ function(add_xpl_test target_name source_file)
     set_property(GLOBAL APPEND PROPERTY XPLUGIN_TEST_TARGETS ${target_name})
 endfunction()
 
-# ---- 骨架冒烟（M1 起的 substrate 逐个追加） ----
-add_xpl_test(test_smoke ${CMAKE_CURRENT_SOURCE_DIR}/test_smoke.c)
+# ---- 骨架冒烟 + M1a substrate（M1b 起的 substrate 逐个追加） ----
+add_xpl_test(test_smoke   ${CMAKE_CURRENT_SOURCE_DIR}/test_smoke.c)
+add_xpl_test(test_ctx     ${CMAKE_CURRENT_SOURCE_DIR}/test_ctx.c)
+add_xpl_test(test_effect  ${CMAKE_CURRENT_SOURCE_DIR}/test_effect.c)
