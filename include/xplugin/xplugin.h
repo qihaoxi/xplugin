@@ -93,11 +93,18 @@ XPL_API xpl_status xpl_effect_rollback_to(xpl_ctx* ctx, size_t mark);
 typedef struct xpl_build_info {
 	const char* git_commit; /* 完整 hash，dirty 时带 "-dirty"；无 git 为 "nogit" */
 	const char* git_branch;
-	const char* timestamp; /* ISO8601 构建时刻 */
-	const char* host;	   /* 构建主机名 */
-	const char* system;	   /* <系统>-<架构>，如 Linux-x86_64 */
-	const char* compiler;  /* <编译器id>-<版本> */
-	const char* version;   /* 语义版本串（恒等于 XPLUGIN_VERSION_STRING） */
+	const char* timestamp;		 /* ISO8601 构建时刻 */
+	const char* os;				 /* 操作系统名，如 "Linux" */
+	const char* distro;			 /* 发行版名，如 "Debian GNU/Linux"；非发行版 = os */
+	const char* distro_version;	 /* 发行版版本号，如 "12"；无则 "-" */
+	const char* distro_codename; /* 发行版代号，如 "bookworm"；无则 "-" */
+	const char* kernel;			 /* 内核版本，如 "6.1.0-amd64" */
+	const char* arch;			 /* 架构，如 "x86_64" */
+	const char* host;			 /* 构建主机名（nodename） */
+	const char* compiler;		 /* 编译器名+版本，如 "GNU 15.2.0" */
+	const char* compiler_path;	 /* 编译器可执行路径 */
+	const char* linker;			 /* 链接器名+版本，如 "GNU ld (GNU Binutils for Debian) 2.44" */
+	const char* version;		 /* 语义版本串（恒等于 XPLUGIN_VERSION_STRING） */
 } xpl_build_info_t;
 
 /* 返回指向静态存储的构建信息（永不 NULL，永不失败） */

@@ -35,8 +35,17 @@ static void test_build_info(void) {
 	XPL_TEST_CHECK(bi->git_commit != NULL && bi->git_commit[0] != '\0');
 	XPL_TEST_CHECK(bi->git_branch != NULL && bi->git_branch[0] != '\0');
 	XPL_TEST_CHECK(bi->timestamp != NULL && bi->timestamp[0] != '\0');
-	XPL_TEST_CHECK(bi->system != NULL && bi->system[0] != '\0');
+	XPL_TEST_CHECK(bi->os != NULL && bi->os[0] != '\0');
+	XPL_TEST_CHECK(bi->distro != NULL && bi->distro[0] != '\0');
+	XPL_TEST_CHECK(bi->distro_version != NULL && bi->distro_version[0] != '\0');
+	XPL_TEST_CHECK(bi->distro_codename != NULL && bi->distro_codename[0] != '\0');
+	XPL_TEST_CHECK(bi->kernel != NULL && bi->kernel[0] != '\0');
+	XPL_TEST_CHECK(bi->arch != NULL && bi->arch[0] != '\0');
+	XPL_TEST_CHECK(bi->host != NULL && bi->host[0] != '\0');
 	XPL_TEST_CHECK(bi->compiler != NULL && bi->compiler[0] != '\0');
+	XPL_TEST_CHECK(bi->compiler_path != NULL && bi->compiler_path[0] != '\0');
+	XPL_TEST_CHECK(bi->linker != NULL && bi->linker[0] != '\0');
+	XPL_TEST_CHECK(strcmp(bi->linker, "unknown") != 0);
 }
 
 int main(void) {
