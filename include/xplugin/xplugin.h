@@ -101,8 +101,9 @@ typedef struct xpl_build_info {
 	const char* kernel;			 /* 内核版本，如 "6.1.0-amd64" */
 	const char* arch;			 /* 架构，如 "x86_64" */
 	const char* host;			 /* 构建主机名（nodename） */
-	const char* compiler;		 /* 编译器名+版本，如 "GNU 15.2.0" */
-	const char* compiler_path;	 /* 编译器可执行路径 */
+	const char* toolchain;		 /* 总工具链版本，如 "GNU 15.2.0" */
+	const char* cc;				 /* compiler 详细版本串，如 "gcc (Debian 15.2.0-4 15.2.0-4) 15.2.0" */
+	const char* cc_path;		 /* compiler 可执行路径 */
 	const char* linker;			 /* 链接器名+版本，如 "GNU ld (GNU Binutils for Debian) 2.44" */
 	const char* version;		 /* 语义版本串（恒等于 XPLUGIN_VERSION_STRING） */
 } xpl_build_info_t;

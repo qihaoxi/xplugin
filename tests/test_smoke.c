@@ -42,8 +42,9 @@ static void test_build_info(void) {
 	XPL_TEST_CHECK(bi->kernel != NULL && bi->kernel[0] != '\0');
 	XPL_TEST_CHECK(bi->arch != NULL && bi->arch[0] != '\0');
 	XPL_TEST_CHECK(bi->host != NULL && bi->host[0] != '\0');
-	XPL_TEST_CHECK(bi->compiler != NULL && bi->compiler[0] != '\0');
-	XPL_TEST_CHECK(bi->compiler_path != NULL && bi->compiler_path[0] != '\0');
+	XPL_TEST_CHECK(bi->toolchain != NULL && bi->toolchain[0] != '\0');
+	XPL_TEST_CHECK(bi->cc != NULL && bi->cc[0] != '\0');
+	XPL_TEST_CHECK(bi->cc_path != NULL && bi->cc_path[0] != '\0');
 	XPL_TEST_CHECK(bi->linker != NULL && bi->linker[0] != '\0');
 	XPL_TEST_CHECK(strcmp(bi->linker, "unknown") != 0);
 }

@@ -110,9 +110,21 @@ function(xpl_generate_build_info out_header_var)
         set(_kernel "${CMAKE_SYSTEM_VERSION}")
     endif ()
 
-    # ---- 编译器：名+版本 / 路径 ----
-    set(_compiler "${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
-    set(_compiler_path "${CMAKE_C_COMPILER}")
+    # ---- 工具链：总版本 / cc 详细版本串 / 路径 / 链接器 ----
+    set(_toolchain "${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}") # 总版本，如 "GNU 15.2.0"
+    set(_cc_path "${CMAKE_C_COMPILER}")
+
+    # cc 详细串：--version 首行（如 "gcc (Debian 15.2.0-4 15.2.0-4) 15.2.0"）。
+    # MSVC 的 cl 无 --version，降级为总版本串。
+    set(_cc_detail "${_toolchain}")
+    if (NOT MSVC AND CMAKE_C_COMPILER)
+        execute_process(COMMAND "${CMAKE_C_COMPILER}" --version
+            OUTPUT_VARIABLE _ccv OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        string(REGEX MATCH "^[^\r\n]+" _cc_line "${_ccv}")
+        if (NOT "${_cc_line}" STREQUAL "")
+            set(_cc_detail "${_cc_line}")
+        endif ()
+    endif ()
 
     # ---- 链接器：名+版本（CMAKE_LINKER 优先，POSIX 回退 ld/lld）----
     set(_linker "unknown")
@@ -138,7 +150,7 @@ function(xpl_generate_build_info out_header_var)
 
     # ---- 转义（防注入换行/引号）----
     foreach (_v _git_commit _git_branch _timestamp _host _os _distro _distro_version
-              _distro_codename _kernel _arch _compiler _compiler_path _linker)
+              _distro_codename _kernel _arch _toolchain _cc_detail _cc_path _linker)
         string(REPLACE "\\" "\\\\" ${_v} "${${_v}}")
         string(REPLACE "\"" "\\\"" ${_v} "${${_v}}")
         string(REPLACE "\n" " " ${_v} "${${_v}}")
@@ -160,13 +172,15 @@ function(xpl_generate_build_info out_header_var)
     file(APPEND "${_gen_header}" "#define XPL_BUILD_DISTRO_CODENAME  \"${_distro_codename}\"\n")
     file(APPEND "${_gen_header}" "#define XPL_BUILD_KERNEL           \"${_kernel}\"\n")
     file(APPEND "${_gen_header}" "#define XPL_BUILD_ARCH             \"${_arch}\"\n")
-    file(APPEND "${_gen_header}" "#define XPL_BUILD_COMPILER         \"${_compiler}\"\n")
-    file(APPEND "${_gen_header}" "#define XPL_BUILD_COMPILER_PATH    \"${_compiler_path}\"\n")
+    file(APPEND "${_gen_header}" "#define XPL_BUILD_TOOLCHAIN        \"${_toolchain}\"\n")
+    file(APPEND "${_gen_header}" "#define XPL_BUILD_CC               \"${_cc_detail}\"\n")
+    file(APPEND "${_gen_header}" "#define XPL_BUILD_CC_PATH          \"${_cc_path}\"\n")
     file(APPEND "${_gen_header}" "#define XPL_BUILD_LINKER           \"${_linker}\"\n\n")
     file(APPEND "${_gen_header}" "#endif /* XPLUGIN_BUILD_INFO_GENERATED_H */\n")
 
     message(STATUS "build-info: commit=${_git_commit} branch=${_git_branch} @ ${_timestamp}")
     message(STATUS "build-info: os=${_distro} ${_distro_version} (${_distro_codename}) kernel=${_kernel} ${_arch}")
-    message(STATUS "build-info: cc=${_compiler} ld=${_linker}")
+    message(STATUS "build-info: toolchain=${_toolchain} cc=${_cc_detail}")
+    message(STATUS "build-info: ld=${_linker}")
     set(${out_header_var} "${_gen_header}" PARENT_SCOPE)
 endfunction()
