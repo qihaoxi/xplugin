@@ -27,4 +27,6 @@
 
 ## 状态
 
-设计阶段(M0 未启动)。当前代码仅为占位骨架。
+- ✅ **M0 工程地基**(2026-08-31):CMake 骨架(C11 + `-Werror`/`/WX`、三档裁剪宏 `XPLUGIN_LOADER`/`XPLUGIN_REMOTE`)、ASan/TSan 双趟、`verify` target、`format` target、`.clang-format`、冒烟测试。本地验证:`cmake --build cmake-build-debug --target verify`(构建 + ctest 全绿)。
+- ⏭ **M1a**(下一步):`xpl_ctx` + effect 栈(`include/xplugin/xplugin.h` 追加 API,见 `docs/design.md` §5.1)。
+- 当前代码:骨架 + 版本访问器,非业务功能。

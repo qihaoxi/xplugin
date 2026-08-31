@@ -1,0 +1,23 @@
+# xplugin formatting style —— kernel 缩进（Tab/80）+ K&R 大括号（函数花括号留本行）
+# 单源：改风格只改本文件 + .editorconfig（打字态兜底），勿在 IDE 里导出覆盖
+# （对齐 xvm/.clang-format：Code style 以仓库文件为唯一权威）
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Always
+ColumnLimit: 120
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+IndentCaseLabels: false
+SortIncludes: false
+DerivePointerAlignment: false
+PointerAlignment: Left
+SpaceBeforeParens: ControlStatements
+SeparateDefinitionBlocks: Always
+
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+Cpp11BracedListStyle: false
+AlignArrayOfStructures: None
