@@ -20,6 +20,15 @@ endif ()
 
 project(xplugin VERSION 0.1.0 LANGUAGES C)
 
+# 嵌入友好（与 xgc/xlog「修为可嵌入」同口径）：dev-gate 全局 target（verify/format）
+# 命名会与宿主工程（如 xvm 的 verify、xgc 的 format）冲突，故只在 xplugin 作为
+# 顶层工程（独立 cmake）时定义；被 add_subdirectory(宿主) 嵌入时跳过。
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    set(XPLUGIN_TOP_LEVEL ON)
+else ()
+    set(XPLUGIN_TOP_LEVEL OFF)
+endif ()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)  # 扩展白名单同 xvm：computed goto / _Thread_local，见 docs/design.md §10
@@ -74,7 +83,7 @@ message(STATUS "xplugin version:      ${PROJECT_VERSION}")
 message(STATUS "xplugin project root: ${XPLUGIN_PROJECT_ROOT}")
 
 # ---- 测试 ----
-if (XPLUGIN_BUILD_TESTS)
+if (XPLUGIN_BUILD_TESTS AND XPLUGIN_TOP_LEVEL)
     enable_testing()
     add_subdirectory(tests)
 
@@ -89,7 +98,7 @@ endif ()
 
 # ---- format：cmake --build <dir> --target format（脚本模式 -P）----
 find_program(CLANG_FORMAT_EXECUTABLE NAMES clang-format clang-format-18 clang-format-17 clang-format-16)
-if (CLANG_FORMAT_EXECUTABLE)
+if (CLANG_FORMAT_EXECUTABLE AND XPLUGIN_TOP_LEVEL)
     add_custom_target(format
         COMMAND ${CMAKE_COMMAND}
             -D XPLUGIN_PROJECT_ROOT=${XPLUGIN_PROJECT_ROOT}
